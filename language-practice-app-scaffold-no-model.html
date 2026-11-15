@@ -1,0 +1,423 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Language Practice App</title>
+  <style>
+    :root {
+      font-family: Inter, system-ui, sans-serif;
+      color: #111827;
+      background: #f8fafc;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 24px;
+      display: flex;
+      justify-content: center;
+    }
+    main {
+      width: 100%;
+      max-width: 720px;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+    h1 { font-size: 1.4rem; margin: 0; }
+    .card {
+      background: #fff;
+      border: 1px solid #e2e8f0;
+      border-radius: 12px;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .row {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .field {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      flex: 1;
+      min-width: 140px;
+    }
+    label {
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: #475569;
+    }
+    select, input, textarea {
+      font: inherit;
+      padding: 8px 10px;
+      border: 1px solid #cbd5e1;
+      border-radius: 8px;
+      background: #fff;
+      color: inherit;
+    }
+    textarea { resize: vertical; min-height: 110px; }
+    button {
+      font: inherit;
+      font-weight: 600;
+      padding: 10px 18px;
+      border: none;
+      border-radius: 8px;
+      background: #2563eb;
+      color: #fff;
+      cursor: pointer;
+      align-self: flex-start;
+    }
+    button:hover { background: #1d4ed8; }
+    button:disabled { background: #94a3b8; cursor: not-allowed; }
+    .status {
+      font-size: 0.85rem;
+      padding: 8px 12px;
+      border-radius: 8px;
+      display: none;
+    }
+    .status.info { display: block; background: #eff6ff; color: #1d4ed8; }
+    .status.warn { display: block; background: #fef3c7; color: #92400e; }
+    .status.error { display: block; background: #fee2e2; color: #b91c1c; }
+    .model-badge {
+      font-size: 0.75rem;
+      font-weight: 600;
+      padding: 4px 10px;
+      border-radius: 999px;
+      align-self: flex-start;
+    }
+    .model-badge.ok { background: #dcfce7; color: #166534; }
+    .model-badge.none { background: #f1f5f9; color: #64748b; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Language Practice App</h1>
+
+    <!-- ======================= MODEL ADAPTER ======================= -->
+    <!--
+      To connect a model, fill in MODEL_CONFIG below. The app talks to an
+      OpenAI-compatible chat completions endpoint, e.g. a llama.cpp server:
+
+        llama-server -m your-model.q4_k_m.gguf --port 8080
+
+      Then set:
+        endpoint: "http://localhost:8080/v1/chat/completions"
+        model:    the model name your server reports (often the filename)
+
+      With an empty endpoint the app still starts, but all model actions
+      are disabled and show a hint instead. No model or weights are
+      included in this repository, so there are no license issues.
+    -->
+    <script>
+      const MODEL_CONFIG = {
+        endpoint: "",   // e.g. "http://localhost:8080/v1/chat/completions"
+        model: "",      // e.g. "your-model.q4_k_m.gguf"
+        apiKey: "",     // only needed if your server requires one
+      };
+
+      /**
+       * Sends a chat prompt to the configured model endpoint.
+       * Returns { ok: true, text } or { ok: false, reason }.
+       * Replace this function to switch to a different backend
+       * (local Python server, mobile runtime, etc.).
+       */
+      async function callModel(systemPrompt, userPrompt, maxTokens) {
+        if (!MODEL_CONFIG.endpoint) {
+          return { ok: false, reason: "no-model" };
+        }
+        try {
+          const response = await fetch(MODEL_CONFIG.endpoint, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              ...(MODEL_CONFIG.apiKey
+                ? { "Authorization": "Bearer " + MODEL_CONFIG.apiKey }
+                : {}),
+            },
+            body: JSON.stringify({
+              model: MODEL_CONFIG.model || "default",
+              messages: [
+                { role: "system", content: systemPrompt },
+                { role: "user", content: userPrompt },
+              ],
+              max_tokens: maxTokens,
+              temperature: 0.3,
+            }),
+          });
+          if (!response.ok) {
+            return { ok: false, reason: "HTTP " + response.status };
+          }
+          const data = await response.json();
+          const text = data.choices?.[0]?.message?.content?.trim();
+          if (!text) {
+            return { ok: false, reason: "empty response" };
+          }
+          return { ok: true, text };
+        } catch (err) {
+          return { ok: false, reason: String(err) };
+        }
+      }
+
+      function modelConfigured() {
+        return Boolean(MODEL_CONFIG.endpoint);
+      }
+
+      // ---- Task prompts (must match your fine-tuned model) ----
+
+      const PROMPT_GENERATE =
+        "You are a language teacher creating practice material.\n" +
+        "Write a natural text in {src} at CEFR level {level} " +
+        "(A1=beginner to C2=mastery; vocabulary, grammar and sentence " +
+        "complexity MUST match this level exactly).\n" +
+        "Topic: {topic}\n" +
+        "Length: approximately {length} words.\n" +
+        "Output ONLY the text, no title, no explanations.";
+
+      const PROMPT_REFERENCE =
+        "You are a professional translator.\n" +
+        "Translate the following text from {src} to {tgt}.\n" +
+        "Output ONLY the translation.\n\nText: {text}";
+
+      const PROMPT_EVALUATE =
+        "You are a language teacher grading a translation exercise.\n" +
+        "Source text ({src}): {text}\n" +
+        "Student translation ({tgt}): {student}\n" +
+        "Reference translation: {reference}\n\n" +
+        "Respond ONLY with a JSON object:\n" +
+        '{"verdict": "correct" | "mostly_correct" | "incorrect", ' +
+        '"score": 0-100, ' +
+        '"errors": [{"type": "grammar|vocabulary|meaning|spelling", ' +
+        '"excerpt": "...", "correction": "...", "explanation": "..."}], ' +
+        '"feedback": "one short encouraging sentence"}';
+
+      const LANG_NAMES = {
+        de: "German", en: "English", ja: "Japanese", fr: "French",
+        es: "Spanish", it: "Italian", zh: "Chinese", nl: "Dutch",
+        pt: "Portuguese", ru: "Russian", tr: "Turkish", pl: "Polish",
+      };
+    </script>
+    <!-- ===================== /MODEL ADAPTER ======================== -->
+
+    <div class="card">
+      <span id="model-badge" class="model-badge none">No model configured</span>
+
+      <div class="row">
+        <div class="field">
+          <label for="source-lang">Source language</label>
+          <select id="source-lang"></select>
+        </div>
+        <div class="field">
+          <label for="target-lang">Target language</label>
+          <select id="target-lang"></select>
+        </div>
+        <div class="field">
+          <label for="level">Level (CEFR)</label>
+          <select id="level">
+            <option>A1</option>
+            <option>A2</option>
+            <option>B1</option>
+            <option>B2</option>
+            <option>C1</option>
+            <option>C2</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="sentence-count">Sentences (max 50)</label>
+          <input id="sentence-count" type="number" min="1" max="50" value="5" />
+        </div>
+      </div>
+
+      <div class="field">
+        <label for="generated-text">Generated text (model)</label>
+        <textarea id="generated-text" readonly
+          placeholder="The generated practice text appears here."></textarea>
+      </div>
+
+      <button id="btn-generate">Generate text</button>
+
+      <div id="status-generate" class="status"></div>
+    </div>
+
+    <div class="card">
+      <div class="field">
+        <label for="user-translation">Your translation</label>
+        <textarea id="user-translation"
+          placeholder="Translate the generated text here."></textarea>
+      </div>
+
+      <button id="btn-compare">Compare with model</button>
+
+      <div id="status-compare" class="status"></div>
+
+      <div class="field">
+        <label for="reference-output">Model evaluation / reference translation</label>
+        <textarea id="reference-output" readonly
+          placeholder="The model's reference translation and feedback appear here."></textarea>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    // ------------------------------------------------------------------
+    // UI wiring
+    // ------------------------------------------------------------------
+
+    const $ = (id) => document.getElementById(id);
+
+    function fillLanguageSelects() {
+      for (const selectId of ["source-lang", "target-lang"]) {
+        const select = $(selectId);
+        for (const [code, name] of Object.entries(LANG_NAMES)) {
+          const option = document.createElement("option");
+          option.value = code;
+          option.textContent = name;
+          select.appendChild(option);
+        }
+      }
+      $("source-lang").value = "de";
+      $("target-lang").value = "en";
+    }
+
+    function setStatus(id, kind, message) {
+      const el = $(id);
+      el.className = "status " + kind;
+      el.textContent = message;
+    }
+
+    function updateModelBadge() {
+      const badge = $("model-badge");
+      if (modelConfigured()) {
+        badge.className = "model-badge ok";
+        badge.textContent = "Model configured: " +
+          (MODEL_CONFIG.model || MODEL_CONFIG.endpoint);
+      } else {
+        badge.className = "model-badge none";
+        badge.textContent = "No model configured (app runs in demo mode)";
+      }
+    }
+
+    function requireModel(statusId) {
+      if (modelConfigured()) return true;
+      setStatus(statusId, "warn",
+        "No model configured. Set MODEL_CONFIG.endpoint at the top of this " +
+        "file to connect your fine-tuned model.");
+      return false;
+    }
+
+    // ---- Generate text --------------------------------------------
+
+    $("btn-generate").addEventListener("click", async () => {
+      if (!requireModel("status-generate")) return;
+
+      const src = LANG_NAMES[$("source-lang").value];
+      const tgt = LANG_NAMES[$("target-lang").value];
+      const level = $("level").value;
+      const count = Math.min(parseInt($("sentence-count").value, 10) || 1, 50);
+
+      $("btn-generate").disabled = true;
+      setStatus("status-generate", "info", "Generating text ...");
+      $("generated-text").value = "";
+
+      // Rough word budget: ~12 words per sentence
+      const prompt = PROMPT_GENERATE
+        .replace("{src}", src)
+        .replace("{tgt}", tgt)
+        .replace("{level}", level)
+        .replace("{topic}", "everyday life")
+        .replace("{length}", String(count * 12));
+
+      const result = await callModel(
+        "You are a helpful assistant.", prompt, 1024);
+
+      $("btn-generate").disabled = false;
+      if (result.ok) {
+        $("generated-text").value = result.text;
+        setStatus("status-generate", "info", "Text generated.");
+      } else {
+        setStatus("status-generate", "error", "Generation failed: " + result.reason);
+      }
+    });
+
+    // ---- Compare translation --------------------------------------
+
+    $("btn-compare").addEventListener("click", async () => {
+      if (!requireModel("status-compare")) return;
+
+      const sourceText = $("generated-text").value.trim();
+      const userTranslation = $("user-translation").value.trim();
+      if (!sourceText) {
+        setStatus("status-compare", "warn", "Generate a text first.");
+        return;
+      }
+      if (!userTranslation) {
+        setStatus("status-compare", "warn", "Enter your translation first.");
+        return;
+      }
+
+      const src = LANG_NAMES[$("source-lang").value];
+      const tgt = LANG_NAMES[$("target-lang").value];
+
+      $("btn-compare").disabled = true;
+      setStatus("status-compare", "info", "Checking your translation ...");
+
+      // 1) Reference translation
+      const refPrompt = PROMPT_REFERENCE
+        .replace("{src}", src)
+        .replace("{tgt}", tgt)
+        .replace("{text}", sourceText);
+      const refResult = await callModel(
+        "You are a helpful assistant.", refPrompt, 1024);
+
+      if (!refResult.ok) {
+        $("btn-compare").disabled = false;
+        setStatus("status-compare", "error",
+          "Reference translation failed: " + refResult.reason);
+        return;
+      }
+
+      // 2) Evaluation of the user's translation
+      const evalPrompt = PROMPT_EVALUATE
+        .replace(/\{src\}/g, src)
+        .replace(/\{tgt\}/g, tgt)
+        .replace("{text}", sourceText)
+        .replace("{student}", userTranslation)
+        .replace("{reference}", refResult.text);
+      const evalResult = await callModel(
+        "You are a helpful assistant.", evalPrompt, 1024);
+
+      $("btn-compare").disabled = false;
+      if (!evalResult.ok) {
+        // Fall back to showing only the reference translation
+        $("reference-output").value =
+          "Reference translation:\n" + refResult.text +
+          "\n\n(Evaluation failed: " + evalResult.reason + ")";
+        setStatus("status-compare", "error",
+          "Evaluation failed: " + evalResult.reason);
+        return;
+      }
+
+      let evaluation = evalResult.text;
+      try {
+        const parsed = JSON.parse(evaluation);
+        evaluation = JSON.stringify(parsed, null, 2);
+      } catch (_) {
+        // keep raw text if the model did not return valid JSON
+      }
+
+      $("reference-output").value =
+        "Reference translation:\n" + refResult.text +
+        "\n\nEvaluation:\n" + evaluation;
+      setStatus("status-compare", "info", "Done.");
+    });
+
+    // ---- Init ------------------------------------------------------
+
+    fillLanguageSelects();
+    updateModelBadge();
+  </script>
+</body>
+</html>
